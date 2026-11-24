@@ -52,4 +52,3 @@ pnpm build
 ```
 
 Hosted readiness still depends on applying and checking the migrations in the intended Supabase project, configuring Bridge and Supabase environment variables in the hosting project, and verifying the live flows. This workspace does not contain production credentials.
-
