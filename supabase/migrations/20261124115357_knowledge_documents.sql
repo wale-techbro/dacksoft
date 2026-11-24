@@ -52,7 +52,7 @@ stable
 set search_path = ''
 as $$
   select c.id, c.document_id, d.name, c.page_number, c.section_name, c.content,
-         (1 - (c.embedding <=> query_embedding))::double precision
+         (1 - (c.embedding OPERATOR(extensions.<=>) query_embedding))::double precision
   from public.document_chunks c
   join public.documents d on d.id = c.document_id and d.tenant_id = c.tenant_id
   where c.tenant_id = target_tenant
@@ -60,8 +60,8 @@ as $$
     and d.status = 'ready'
     and c.embedding is not null
     and private.is_tenant_member(target_tenant)
-    and (1 - (c.embedding <=> query_embedding)) >= match_threshold
-  order by c.embedding <=> query_embedding
+    and (1 - (c.embedding OPERATOR(extensions.<=>) query_embedding)) >= match_threshold
+  order by c.embedding OPERATOR(extensions.<=>) query_embedding
   limit least(greatest(match_count, 1), 10);
 $$;
 
