@@ -2,11 +2,13 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 export async function refreshSupabaseSession(request: NextRequest) {
-  if (request.nextUrl.pathname === "/api/health") return NextResponse.next({ request });
+  const path = request.nextUrl.pathname;
+  const publicPath = path === "/" || path === "/login" || path === "/setup" || path === "/api/health" || path.startsWith("/auth/");
+  if (path === "/api/health") return NextResponse.next({ request });
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !key) {
-    if (process.env.NODE_ENV === "production" && request.nextUrl.pathname !== "/setup") {
+    if (process.env.NODE_ENV === "production" && !publicPath) {
       const setup = request.nextUrl.clone(); setup.pathname = "/setup";
       return NextResponse.redirect(setup);
     }
@@ -25,8 +27,7 @@ export async function refreshSupabaseSession(request: NextRequest) {
     },
   });
   const { data } = await supabase.auth.getClaims();
-  const path = request.nextUrl.pathname;
-  if (!data?.claims && path !== "/login" && !path.startsWith("/auth/")) {
+  if (!data?.claims && !publicPath) {
     const login = request.nextUrl.clone();
     login.pathname = "/login";
     login.searchParams.set("next", path);

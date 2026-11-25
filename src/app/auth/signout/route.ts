@@ -8,5 +8,5 @@ export async function POST(request: NextRequest) {
   } catch {
     // Clear the browser's workspace access path even if Auth is unavailable.
   }
-  return NextResponse.redirect(new URL("/login", request.url), { status: 303 });
+  return NextResponse.redirect(new URL("/", request.url), { status: 303 });
 }

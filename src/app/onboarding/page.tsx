@@ -15,7 +15,7 @@ export default function OnboardingPage() {
       const supabase = createSupabaseBrowserClient();
       const { error: createError } = await supabase.rpc("create_tenant_for_current_user", { tenant_name: name });
       if (createError) throw createError;
-      router.push("/");
+      router.push("/dashboard");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Workspace could not be created."); }
     finally { setBusy(false); }
   }

@@ -33,7 +33,7 @@ export default function LoginPage() {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
         const { data: memberships } = await supabase.from("tenant_memberships").select("tenant_id").limit(1);
-        router.push(memberships?.length ? "/" : "/onboarding");
+        router.push(memberships?.length ? "/dashboard" : "/onboarding");
       } else {
         const { data, error } = await supabase.auth.signUp({
           email,
@@ -44,7 +44,7 @@ export default function LoginPage() {
         if (!data.session) { setNotice("Check your email to confirm your account, then sign in to finish workspace setup."); return; }
         const { error: tenantError } = await supabase.rpc("create_tenant_for_current_user", { tenant_name: company });
         if (tenantError) throw tenantError;
-        router.push("/");
+        router.push("/dashboard");
       }
     } catch (error) { setNotice(error instanceof Error ? error.message : "Sign-in could not be completed."); }
     finally { setBusy(false); }
