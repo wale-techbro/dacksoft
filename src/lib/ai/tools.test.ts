@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { executeBusinessTool } from "./tools";
 
 describe("NexaStore demo order tool", () => {
+  afterEach(() => vi.useRealTimers());
   it("returns the seeded milestone order from the synthetic dataset", async () => {
     const result = await executeBusinessTool("get_order_status", JSON.stringify({ order_id: "ORD-1004" }));
     expect(result).toMatchObject({ found: true, id: "ORD-1004", status: "In transit", trackingNumber: "NX730004812" });
@@ -17,6 +18,8 @@ describe("NexaStore demo order tool", () => {
     expect(result).toMatchObject({ found: false, order_id: "ORD-999999" });
   });
   it("checks return eligibility with a deterministic delivered-date rule", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-01T12:00:00Z"));
     const eligible = await executeBusinessTool("check_return_eligibility", JSON.stringify({ order_id: "ORD-1084" }));
     const expired = await executeBusinessTool("check_return_eligibility", JSON.stringify({ order_id: "ORD-1085" }));
     expect(eligible).toMatchObject({ found: true, eligible: true });

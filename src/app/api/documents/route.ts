@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireTenantMembership } from "@/lib/supabase/server";
 import { chunkDocumentPages, extractDocumentText } from "@/lib/knowledge/text";
-import { embedTexts } from "@/lib/knowledge/embeddings";
+import { embedTexts, EmbeddingServiceError } from "@/lib/knowledge/embeddings";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -50,25 +50,45 @@ export async function POST(request: Request) {
   if (insertError || !document) return NextResponse.json({ error: "Could not register this document." }, { status: 500 });
   const storagePath = `${tenantId}/${document.id}/${cleanName}`;
   let stored = false;
+  let stage = "storage";
   try {
     const { error: uploadError } = await access.supabase.storage.from(BUCKET).upload(storagePath, file, { contentType: isPdf ? "application/pdf" : "text/plain", upsert: false, cacheControl: "0" });
     if (uploadError) throw new Error("Storage upload failed.");
     stored = true;
+    stage = "extraction";
     const pages = await extractDocumentText(bytes, isPdf ? "pdf" : "txt");
     const chunks = chunkDocumentPages(pages);
     if (!chunks.length || chunks.length > 250) throw new Error("Document contains too many text sections.");
+    stage = "embedding";
     const vectors = await embedTexts(chunks.map((chunk) => chunk.content), "RETRIEVAL_DOCUMENT");
     const rows = chunks.map((chunk, index) => ({ tenant_id: tenantId, document_id: document.id, chunk_index: chunk.chunkIndex, content: chunk.content, page_number: chunk.pageNumber, section_name: null, embedding: vectors[index] }));
+    stage = "index_storage";
     const { error: chunkError } = await access.supabase.from("document_chunks").insert(rows);
     if (chunkError) throw new Error("Could not store document search sections.");
+    stage = "completion";
     const { data: ready, error: readyError } = await access.supabase.from("documents").update({ status: "ready", storage_path: storagePath, error_message: null }).eq("id", document.id).eq("tenant_id", tenantId).select("id, name, mime_type, status, created_at").single();
     if (readyError || !ready) throw new Error("Could not mark document processing complete.");
     return NextResponse.json({ document: ready, chunkCount: chunks.length }, { status: 201 });
   } catch (error) {
-    if (stored) await access.supabase.storage.from(BUCKET).remove([storagePath]);
-    await access.supabase.from("document_chunks").delete().eq("document_id", document.id).eq("tenant_id", tenantId);
-    await access.supabase.from("documents").update({ status: "error", storage_path: null, error_message: "Processing failed. Check the file and Bridge configuration, then upload it again." }).eq("id", document.id).eq("tenant_id", tenantId);
-    console.error("Document processing failed", { documentId: document.id, kind: isPdf ? "pdf" : "txt", code: error instanceof Error ? error.name : "unknown" });
-    return NextResponse.json({ error: "Document processing failed. Check the file and Bridge configuration, then try again.", documentId: document.id }, { status: 502 });
+    const message = stage === "extraction"
+      ? "Text extraction failed. Check that the PDF contains readable text or the TXT file is valid UTF-8."
+      : stage === "embedding"
+        ? error instanceof EmbeddingServiceError && error.statusCode
+          ? `Bridge could not create document embeddings (HTTP ${error.statusCode}). Check the Bridge model and server configuration.`
+          : "Bridge could not create document embeddings. Check the Bridge model and server configuration."
+        : stage === "storage" || stage === "index_storage"
+          ? "Workspace storage failed while saving the document or its searchable sections. Check storage access and database availability."
+          : "The document was processed but could not be marked complete. Contact support before retrying.";
+    const cleanupErrors: string[] = [];
+    if (stored) {
+      const { error: storageCleanupError } = await access.supabase.storage.from(BUCKET).remove([storagePath]);
+      if (storageCleanupError) cleanupErrors.push("storage");
+    }
+    const { error: chunksCleanupError } = await access.supabase.from("document_chunks").delete().eq("document_id", document.id).eq("tenant_id", tenantId);
+    if (chunksCleanupError) cleanupErrors.push("chunks");
+    const { error: documentUpdateError } = await access.supabase.from("documents").update({ status: "error", storage_path: null, error_message: message }).eq("id", document.id).eq("tenant_id", tenantId);
+    if (documentUpdateError) cleanupErrors.push("status");
+    console.error("Document processing failed", { documentId: document.id, kind: isPdf ? "pdf" : "txt", stage, errorName: error instanceof Error ? error.name : "unknown", cleanupErrors });
+    return NextResponse.json({ error: message, documentId: document.id }, { status: stage === "embedding" ? 502 : 500 });
   }
 }

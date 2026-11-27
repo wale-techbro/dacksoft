@@ -3,9 +3,16 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 export const EMBEDDING_DIMENSIONS = 768;
 export const EMBEDDING_MODEL = process.env.BRIDGE_EMBEDDING_MODEL || "gemini-embedding-2";
 
+export class EmbeddingServiceError extends Error {
+  constructor(message: string, readonly statusCode?: number) {
+    super(message);
+    this.name = "EmbeddingServiceError";
+  }
+}
+
 export async function embedTexts(texts: string[], taskType: "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY") {
   const apiKey = process.env.BRIDGE_API_KEY;
-  if (!apiKey) throw new Error("Bridge is not configured for document embeddings.");
+  if (!apiKey) throw new EmbeddingServiceError("Bridge is not configured for document embeddings.");
   const vectors: number[][] = [];
   for (let offset = 0; offset < texts.length; offset += 32) {
     const input = texts.slice(offset, offset + 32);
@@ -16,11 +23,11 @@ export async function embedTexts(texts: string[], taskType: "RETRIEVAL_DOCUMENT"
       body: JSON.stringify({ model: EMBEDDING_MODEL, input, dimensions: EMBEDDING_DIMENSIONS, task_type: taskType }),
       signal: AbortSignal.timeout(30_000),
     });
-    if (!response.ok) throw new Error(`Bridge embedding request failed (${response.status}).`);
+    if (!response.ok) throw new EmbeddingServiceError(`Bridge embedding request failed (${response.status}).`, response.status);
     const body: unknown = await response.json();
-    if (!body || typeof body !== "object" || !("data" in body) || !Array.isArray(body.data) || body.data.length !== input.length) throw new Error("Bridge returned an incomplete embeddings response.");
+    if (!body || typeof body !== "object" || !("data" in body) || !Array.isArray(body.data) || body.data.length !== input.length) throw new EmbeddingServiceError("Bridge returned an incomplete embeddings response.");
     const batch = [...body.data as Array<{ index: number; embedding: number[] }>].sort((a, b) => a.index - b.index).map((entry) => entry.embedding);
-    if (batch.some((vector) => vector.length !== EMBEDDING_DIMENSIONS || vector.some((n) => !Number.isFinite(n)))) throw new Error("Bridge returned an invalid embedding vector.");
+    if (batch.some((vector) => !Array.isArray(vector) || vector.length !== EMBEDDING_DIMENSIONS || vector.some((n) => !Number.isFinite(n)))) throw new EmbeddingServiceError("Bridge returned an invalid embedding vector.");
     vectors.push(...batch);
   }
   return vectors;

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, ArrowDownLeft, ArrowUpRight, BookOpen, Check, ChevronDown, CircleHelp, Command, Inbox, LayoutDashboard, Link2, MoreHorizontal, Package, Search, Send, Settings2, ShieldCheck, Sparkles, Users, WandSparkles } from "lucide-react";
+import { Activity, ArrowDownLeft, ArrowUpRight, BookOpen, Check, ChevronDown, Command, Inbox, LayoutDashboard, Link2, Package, Send, Settings2, ShieldCheck, Sparkles, Users, WandSparkles } from "lucide-react";
 import { customers, orders } from "@/lib/demo/data";
 
 type Trace = { id: string; durationMs: number; usage: null | { promptTokens: number; completionTokens: number; totalTokens: number }; steps: Array<Record<string, unknown>> };
@@ -19,17 +19,25 @@ export default function Home() {
   const [section, setSection] = useState("Overview");
   const [tenantId, setTenantId] = useState("");
   const [workspace, setWorkspace] = useState<{ name: string; slug: string; environment: "demo" | "production"; role: string } | null>(null);
+  const [memberships, setMemberships] = useState<Array<{ tenant_id: string; role: string; business_tenants: { name: string; slug: string; environment: "demo" | "production" } }>>([]);
+  const [workspaceLoading, setWorkspaceLoading] = useState(true);
+  const [workspaceError, setWorkspaceError] = useState("");
   const [conversationId, setConversationId] = useState("");
   const [thread, setThread] = useState<Array<{ role: "customer" | "assistant"; content: string }>>([]);
   const lastOrder = useMemo(() => orders.find((order) => order.id === "ORD-1004"), []);
 
   useEffect(() => {
     fetch("/api/workspace").then(async (response) => {
-      if (!response.ok) return;
+      if (!response.ok) throw new Error(response.status === 401 ? "Your session has expired. Sign in again." : "Could not load your workspaces.");
       const data = await response.json();
-      const membership = data.memberships?.find((item: { business_tenants?: { slug?: string } }) => item.business_tenants?.slug === "nexastore-demo") ?? data.memberships?.[0];
+      const available = (data.memberships ?? []) as Array<{ tenant_id: string; role: string; business_tenants: { name: string; slug: string; environment: "demo" | "production" } }>;
+      setMemberships(available);
+      const storedId = window.localStorage.getItem("dacksoft-active-workspace");
+      const membership = available.find((item) => item.tenant_id === storedId) ?? available[0];
       if (membership) {
         const tenant = membership.business_tenants;
+        if (!tenant) throw new Error("Workspace details are unavailable.");
+        window.localStorage.setItem("dacksoft-active-workspace", membership.tenant_id);
         setTenantId(membership.tenant_id);
         if (tenant) setWorkspace({ name: tenant.name, slug: tenant.slug, environment: tenant.environment, role: membership.role });
         const savedConversationId = window.localStorage.getItem(`dacksoft-conversation-${membership.tenant_id}`);
@@ -41,16 +49,36 @@ export default function Home() {
             setThread((previous.messages ?? []).filter((item: { role: string }) => item.role === "customer" || item.role === "assistant").map((item: { role: "customer" | "assistant"; content: string }) => ({ role: item.role, content: item.content })));
           }
         }
-      }
-    }).catch(() => undefined);
+      } else setWorkspaceError("No workspace is linked to this account yet. Complete workspace setup to continue.");
+    }).catch((cause) => setWorkspaceError(cause instanceof Error ? cause.message : "Could not load your workspaces.")).finally(() => setWorkspaceLoading(false));
   }, []);
+
+  async function selectWorkspace(tenantId: string) {
+    const membership = memberships.find((item) => item.tenant_id === tenantId);
+    if (!membership?.business_tenants) return;
+    window.localStorage.setItem("dacksoft-active-workspace", tenantId);
+    setTenantId(tenantId);
+    setWorkspace({ ...membership.business_tenants, role: membership.role });
+    setConversationId(""); setThread([]); setTrace(null); setError("");
+    const savedConversationId = window.localStorage.getItem(`dacksoft-conversation-${tenantId}`);
+    if (savedConversationId) {
+      try {
+        const response = await fetch(`/api/conversations/${savedConversationId}?tenantId=${tenantId}`);
+        if (!response.ok) return;
+        const history = await response.json();
+        setConversationId(savedConversationId);
+        setThread((history.messages ?? []).filter((item: { role: string }) => item.role === "customer" || item.role === "assistant").map((item: { role: "customer" | "assistant"; content: string }) => ({ role: item.role, content: item.content })));
+      } catch { setError("Could not load this workspace conversation history."); }
+    }
+  }
 
   async function ask(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!message.trim() || loading) return;
     setLoading(true); setError("");
     try {
-      if (!tenantId) throw new Error("Sign in to a workspace with NexaStore demo access before running the assistant.");
+      if (!tenantId) throw new Error("Select a workspace before running the assistant.");
+      if (workspace?.environment !== "demo" || workspace.slug !== "nexastore-demo") throw new Error("The sample order assistant is available only in the NexaStore demo workspace.");
       const submittedMessage = message.trim();
       setThread((current) => [...current, { role: "customer", content: submittedMessage }, { role: "assistant", content: "" }]);
       const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: submittedMessage, tenantId, stream: true, ...(conversationId ? { conversationId } : {}) }) });
@@ -93,14 +121,14 @@ export default function Home() {
 
   return <main className="shell">
     <aside className="sidebar">
-      <div className="brand"><div className="brand-mark"><WandSparkles size={18} /></div><span>Dacksoft</span><button className="org-switch"><span className="org-avatar">N</span><span className="org-copy"><strong>NexaStore</strong><small>Demo workspace</small></span><ChevronDown size={15} /></button></div>
-      <div className="demo-flag"><span className="pulse" /> {workspace?.environment === "production" ? "Business workspace" : "Synthetic demo environment"}</div>
+      <div className="brand"><div className="brand-mark"><WandSparkles size={18} /></div><span>Dacksoft</span><label className="org-switch"><span className="org-avatar">{workspace?.name.slice(0, 1) ?? "W"}</span><span className="org-copy"><strong>{workspace?.name ?? "Select workspace"}</strong><small>{workspace?.environment === "demo" ? "Demo workspace" : "Business workspace"}</small></span><select aria-label="Select workspace" value={tenantId} onChange={(event) => void selectWorkspace(event.target.value)} disabled={memberships.length < 2}>{memberships.map((membership) => <option key={membership.tenant_id} value={membership.tenant_id}>{membership.business_tenants.name}</option>)}</select><ChevronDown size={15} /></label></div>
+      <div className="demo-flag"><span className="pulse" /> {workspace?.slug === "nexastore-demo" && workspace.environment === "demo" ? "Synthetic demo environment" : "Business workspace"}</div>
       {navigation.map((group) => <div className="nav-group" key={group.title}><div className="nav-label">{group.title}</div>{group.items.map(({ name, icon: Icon, count }) => <button key={name} className={`nav-item ${section === name ? "active" : ""}`} onClick={() => setSection(name)}><Icon size={17} strokeWidth={1.8} /><span>{name}</span>{count && <span className="nav-count">{count}</span>}</button>)}</div>)}
-      <div className="sidebar-bottom"><div className="plan-card"><div className="plan-top"><span className="plan-icon"><Sparkles size={15} /></span><span>AI assistant</span><span className="status-dot" /></div><strong>Bridge status not verified</strong><p>Live access requires a server key and NexaStore demo membership.</p><button onClick={() => setSection("Integrations")}>View integration status <ArrowUpRight size={13} /></button></div><form action="/auth/signout" method="post"><button className="profile" type="submit"><span className="profile-avatar">DS</span><span className="profile-copy"><strong>Workspace account</strong><small>Sign out</small></span><MoreHorizontal size={18} /></button></form></div>
+      <div className="sidebar-bottom"><form action="/auth/signout" method="post"><button className="profile" type="submit"><span className="profile-avatar">{workspace?.name.slice(0, 1) ?? "D"}</span><span className="profile-copy"><strong>{workspace?.name ?? "Workspace account"}</strong><small>Sign out</small></span></button></form></div>
     </aside>
     <section className="main-area">
-      <header className="topbar"><div className="crumb"><span>Workspace</span><span className="slash">/</span><strong>{section}</strong></div><div className="top-actions"><button className="search-trigger"><Search size={15} /><span>Search anything...</span><kbd>⌘ K</kbd></button><button className="help-button"><CircleHelp size={17} /></button><span className="top-avatar">JD</span></div></header>
-      <div className="content-wrap">{section === "Overview" ? workspace?.environment === "production" ? <ProductionOverview tenantId={tenantId} onNavigate={setSection} /> : <><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> MONDAY, NOVEMBER 23, 2026</div><h1>Good morning, Jamie <span className="wave">✳</span></h1><p>Here&apos;s what&apos;s happening across your support workspace.</p></div><button className="primary-button" onClick={() => setSection("Inbox")}><Inbox size={16} /> Open inbox</button></div>
+      <header className="topbar"><div className="crumb"><span>{workspace?.name ?? "Workspace"}</span><span className="slash">/</span><strong>{section}</strong></div><div className="top-actions" /></header>
+      <div className="content-wrap">{workspaceLoading ? <section className="panel empty-panel"><h3>Loading workspace…</h3></section> : workspaceError ? <section className="panel empty-panel"><h3>Workspace unavailable</h3><p>{workspaceError}</p>{workspaceError.startsWith("No workspace is linked") && <a className="primary-button" href="/onboarding">Set up workspace</a>}</section> : section === "Overview" ? workspace?.slug !== "nexastore-demo" || workspace.environment !== "demo" ? <ProductionOverview tenantId={tenantId} onNavigate={setSection} /> : <><div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> NEXASTORE · SYNTHETIC DEMO</div><h1>Demo workspace overview</h1><p>Illustrative activity uses fictional NexaStore data.</p></div><button className="primary-button" onClick={() => setSection("Inbox")}><Inbox size={16} /> Open inbox</button></div>
         <div className="stat-grid">
           <Stat icon={<Users size={17} />} label="Synthetic customers" value={String(customers.length)} delta="Demo data" detail="fictional NexaStore records" tone="blue" />
           <Stat icon={<Package size={17} />} label="Synthetic orders" value={String(orders.length)} delta="Demo data" detail="fictional NexaStore records" tone="green" />
@@ -109,11 +137,11 @@ export default function Home() {
         </div>
         <div className="section-row"><div><h2>Support inbox</h2><p>Pick up where your customers left off.</p></div><button className="text-button" onClick={() => setSection("Inbox")}>View inbox <ArrowUpRight size={14} /></button></div>
         <div className="work-grid">
-          <section className="panel inbox-panel"><div className="panel-heading"><div className="panel-title"><span className="channel-icon"><Inbox size={16} /></span><div><h3>Sample conversations</h3><p>Illustrative inbox items · not saved conversations</p></div></div><button className="icon-button"><MoreHorizontal size={19} /></button></div>
+          <section className="panel inbox-panel"><div className="panel-heading"><div className="panel-title"><span className="channel-icon"><Inbox size={16} /></span><div><h3>Sample conversations</h3><p>Illustrative inbox items · not saved conversations</p></div></div></div>
             <div className="conversation-list"><Conversation initials="MK" color="rose" name="Maya K." subject="Order hasn’t arrived yet" preview="It was meant to be here yesterday..." time="Sample" badge="Needs review" /><Conversation initials="AO" color="blue" name="Ayo O." subject="Can I return my purchase?" preview="I ordered the wrong size by mistake." time="Sample" badge="AI handling" /><Conversation initials="TW" color="green" name="Tomi W." subject="Payment confirmation" preview="Just wanted to check if my order went through." time="Sample" badge="Resolved" /><Conversation initials="NA" color="amber" name="Nneka A." subject="Update delivery address" preview="Could you change the address before it ships?" time="Sample" badge="Needs review" /></div>
             <button className="inbox-footer" onClick={() => setSection("Inbox")}>Open all conversations <ArrowUpRight size={14} /></button>
           </section>
-          <section className="panel activity-panel"><div className="panel-heading"><div className="panel-title"><span className="channel-icon lilac"><Activity size={16} /></span><div><h3>Example AI activity</h3><p>Illustrative events · no live runs recorded</p></div></div><button className="icon-button"><MoreHorizontal size={19} /></button></div>
+          <section className="panel activity-panel"><div className="panel-heading"><div className="panel-title"><span className="channel-icon lilac"><Activity size={16} /></span><div><h3>Example AI activity</h3><p>Illustrative events · no live runs recorded</p></div></div></div>
             <div className="timeline"><ActivityItem icon={<Package size={15} />} color="blue" title="Order status retrieved" subtitle="NexaStore demo connector · ORD-1004" time="Example" /><ActivityItem icon={<BookOpen size={15} />} color="green" title="Knowledge searched" subtitle="Shipping & delivery policy · local example" time="Example" /><ActivityItem icon={<Sparkles size={15} />} color="purple" title="AI reply sent" subtitle="Example only · no saved conversation" time="Example" /><ActivityItem icon={<ArrowDownLeft size={15} />} color="orange" title="Human handoff requested" subtitle="Example only · not a real handoff" time="Example" /></div>
             <button className="inbox-footer" onClick={() => setSection("AI activity")}>View activity log <ArrowUpRight size={14} /></button>
           </section>
@@ -124,13 +152,13 @@ export default function Home() {
             <div className="chat-thread"><div className="chat-date">NEXASTORE · SYNTHETIC DEMO</div>{thread.map((item, index) => item.role === "customer" ? <div className="message customer-message" key={`customer-${index}`}><span className="small-avatar">AS</span><div><div className="bubble">{item.content}</div><small>Customer</small></div></div> : <div className="message assistant-message" key={`assistant-${index}`}><span className="bot-small"><Sparkles size={13} /></span><div><div className="bubble">{item.content}</div><div className="answer-meta"><span><Check size={12} /> Assistant response</span><span>saved</span></div></div></div>)}{error && <div className="error-box">{error}<span>Bridge requests are limited to authenticated NexaStore demo workspaces.</span></div>}{loading && <div className="thinking"><span /><span /><span /> Checking with the assistant...</div>}</div>
             <form className="composer" onSubmit={ask}><input value={message} onChange={(event) => setMessage(event.target.value)} aria-label="Customer message" placeholder="Ask about a customer or order..." maxLength={4000} /><button type="submit" aria-label="Send message" disabled={loading}><Send size={16} /></button><div className="composer-hint"><span><Command size={11} /> Return to send</span><span><ShieldCheck size={12} /> Secure tool execution</span></div></form>
           </section>
-          <section className="panel inspector-panel"><div className="panel-heading inspector-heading"><div className="panel-title"><span className="channel-icon lilac"><Activity size={16} /></span><div><h3>Execution inspector</h3><p>{trace ? `Run ${trace.id.slice(0, 8)} · ${trace.durationMs}ms` : "See what happens behind the answer"}</p></div></div><button className="inspector-menu"><MoreHorizontal size={18} /></button></div>
+          <section className="panel inspector-panel"><div className="panel-heading inspector-heading"><div className="panel-title"><span className="channel-icon lilac"><Activity size={16} /></span><div><h3>Execution inspector</h3><p>{trace ? `Run ${trace.id.slice(0, 8)} · ${trace.durationMs}ms` : "See what happens behind the answer"}</p></div></div></div>
             <div className="trace-steps">{trace ? trace.steps.map((step, i) => <TraceStep key={`${String(step.type)}-${i}`} step={step} index={i + 1} />) : <><TracePreview index="01" title="Customer message received" detail="Where is my order ORD-1004?" tone="blue" /><TracePreview index="02" title="Bridge model request" detail="Model reviews the request and available tools" tone="purple" /><TracePreview index="03" title="Tool call validated" detail="get_order_status · Zod schema" tone="orange" /><TracePreview index="04" title="Demo order retrieved" detail={lastOrder ? `${lastOrder.id} · ${lastOrder.status}` : "NexaStore synthetic data"} tone="green" /><TracePreview index="05" title="Answer returned" detail="Grounded in verified order details" tone="blue" /></>}</div>
             <div className="trace-footer"><div className="trace-metric"><span>Response time</span><strong>{trace ? `${trace.durationMs} ms` : "—"}</strong></div><div className="trace-metric"><span>Provider token usage</span><strong>{trace?.usage ? `${trace.usage.totalTokens} tokens` : "Not reported"}</strong></div><span className="metric-note">Metrics from live Bridge response only</span></div>
           </section>
         </div>
         <footer className="page-foot"><span><ShieldCheck size={13} /> Your data stays protected</span><span>NexaStore records are synthetic demonstration data</span></footer>
-      </> : <WorkspaceView section={section} trace={trace} tenantId={tenantId} isDemo={!workspace || workspace.environment === "demo"} canManage={!workspace || workspace.role !== "viewer"} onNavigate={setSection} />}</div>
+      </> : <WorkspaceView section={section} trace={trace} tenantId={tenantId} isDemo={workspace?.slug === "nexastore-demo" && workspace.environment === "demo"} canManage={workspace?.role !== "viewer"} onNavigate={setSection} />}</div>
     </section>
   </main>;
 }
@@ -141,14 +169,14 @@ function WorkspaceView({ section, trace, tenantId, isDemo, canManage, onNavigate
     Integrations: "Integrations", "AI activity": "AI activity", Settings: "Settings",
   };
   return <>
-    <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> NEXASTORE · SYNTHETIC DEMO</div><h1>{headings[section] ?? section}</h1><p>Demo workspace information. Synthetic records are clearly marked.</p></div>{section === "Inbox" && <button className="primary-button" onClick={() => onNavigate("Overview")}><Sparkles size={15} /> Try order lookup</button>}</div>
+    <div className="page-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> {isDemo ? "NEXASTORE · SYNTHETIC DEMO" : "PRIVATE WORKSPACE"}</div><h1>{headings[section] ?? section}</h1><p>{isDemo ? "Demo workspace information. Synthetic records are clearly marked." : "Workspace information is private to your selected business."}</p></div>{section === "Inbox" && isDemo && <button className="primary-button" onClick={() => onNavigate("Overview")}><Sparkles size={15} /> Try order lookup</button>}</div>
     {section === "Customers" && (isDemo ? <section className="panel data-panel"><div className="panel-heading"><div><h3>Customers</h3><p>{customers.length} fictional customer records</p></div></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Customer</th><th>Customer ID</th><th>Email</th><th>Phone</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td><strong>{customer.name}</strong></td><td>{customer.id}</td><td>{customer.email}</td><td>{customer.phone}</td></tr>)}</tbody></table></div></section> : <WorkspaceConnectorEmpty kind="customer" onNavigate={onNavigate} />)}
     {section === "Orders" && (isDemo ? <section className="panel data-panel"><div className="panel-heading"><div><h3>Orders</h3><p>{orders.length} fictional orders · seed fixtures only</p></div></div><div className="table-scroll"><table className="data-table"><thead><tr><th>Order</th><th>Customer</th><th>Items</th><th>Total</th><th>Status</th><th>Tracking</th></tr></thead><tbody>{orders.map((order) => { const customer = customers.find((item) => item.id === order.customerId); return <tr key={order.id}><td><strong>{order.id}</strong></td><td>{customer?.name ?? "Unknown"}</td><td>{order.items.join(", ")}</td><td>{new Intl.NumberFormat("en-NG", { style: "currency", currency: "NGN", maximumFractionDigits: 0 }).format(order.total)}</td><td><span className={`order-status ${order.status.toLowerCase().replaceAll(" ", "-")}`}>{order.status}</span></td><td>{order.trackingNumber ?? "Not available"}</td></tr>; })}</tbody></table></div></section> : <WorkspaceConnectorEmpty kind="order" onNavigate={onNavigate} />)}
     {section === "Knowledge base" && <div className="content-stack">{isDemo && <section className="panel data-panel"><div className="panel-heading"><div><h3>Demo policy sources</h3><p>Local synthetic examples · no uploaded business documents</p></div><span className="demo-tag">3 SOURCES</span></div><div className="source-list"><Source title="Shipping & delivery policy" section="Delivery windows" text="Standard delivery normally arrives within 3–7 business days after dispatch. Tracking details are shared when a carrier scan becomes available. Delivery estimates can change during carrier delays." /><Source title="Returns & refunds policy" section="Return window" text="Unused products in their original packaging may be returned within 30 calendar days of delivery. Final-sale items are not returnable. Refunds are reviewed by a human support agent after the return is received; this assistant cannot issue a refund." /><Source title="NexaStore FAQ" section="Order changes" text="Address changes may be possible before dispatch. Include the order number and contact support as soon as possible." /></div></section>}<KnowledgeDocuments tenantId={tenantId} canManage={canManage} /></div>}
-    {section === "Integrations" && <div className="integration-grid"><IntegrationCard icon={<Package size={17} />} name="NexaStore demo connector" kind="Demo connector" status="Connected to synthetic records" detail="Customer and order lookup are served by the local, fictional dataset." /><IntegrationCard icon={<Sparkles size={17} />} name="Bridge AI provider" kind="AI provider" status="Not verified" detail="The server-side API key is not configured in this workspace. Live requests have not been tested." /></div>}
+    {section === "Integrations" && <div className="integration-grid">{isDemo && <IntegrationCard icon={<Package size={17} />} name="NexaStore demo connector" kind="Demo connector" status="Connected to synthetic records" detail="Customer and order lookup are served by the local, fictional dataset." />}<IntegrationCard icon={<Sparkles size={17} />} name="Bridge AI provider" kind="AI provider" status="Credentials are managed by the server" detail="Provider availability is checked when a request is made. Secrets are never displayed in this workspace." /></div>}
     {section === "AI activity" && <AIActivity tenantId={tenantId} currentTrace={trace} />}
     {section === "Inbox" && <InboxWorkspace tenantId={tenantId} canManage={canManage} />}
-    {section === "Settings" && <section className="panel settings-panel"><div className="panel-heading"><div><h3>Workspace settings</h3><p>Setup state for this local demo</p></div></div><SettingRow label="Workspace" value="NexaStore demo" /><SettingRow label="Environment" value="Synthetic data only" /><SettingRow label="Bridge model" value="auto · live key not configured" /><SettingRow label="Supabase persistence" value="Not connected" /><SettingRow label="Authentication" value="Not implemented" /><SettingRow label="Rate limiting" value="Distributed limit not configured" /></section>}
+    {section === "Settings" && <section className="panel settings-panel"><div className="panel-heading"><div><h3>Workspace settings</h3><p>Current workspace and access details</p></div></div><SettingRow label="Workspace data" value={isDemo ? "NexaStore synthetic examples" : "Private business data"} /><SettingRow label="Workspace access" value={canManage ? "Member with management access" : "Viewer"} /><SettingRow label="Authentication" value="Supabase authenticated session" /><SettingRow label="Data isolation" value="Tenant scoped with database policies" /><SettingRow label="Knowledge documents" value="Private workspace storage" /></section>}
   </>;
 }
 
@@ -381,10 +409,10 @@ function SettingRow({ label, value }: { label: string; value: string }) {
 }
 
 function Stat({ icon, label, value, delta, detail, tone }: { icon: React.ReactNode; label: string; value: string; delta: string; detail: string; tone: string }) {
-  return <article className="stat-card"><div className="stat-head"><span className={`stat-icon ${tone}`}>{icon}</span><button className="icon-button"><MoreHorizontal size={17} /></button></div><div className="stat-label">{label}</div><div className="stat-value">{value}</div><div className="stat-delta"><span className={tone === "orange" || tone === "purple" ? "neutral-delta" : "positive-delta"}>{delta}</span> {detail}</div></article>;
+  return <article className="stat-card"><div className="stat-head"><span className={`stat-icon ${tone}`}>{icon}</span></div><div className="stat-label">{label}</div><div className="stat-value">{value}</div><div className="stat-delta"><span className={tone === "orange" || tone === "purple" ? "neutral-delta" : "positive-delta"}>{delta}</span> {detail}</div></article>;
 }
 function Conversation({ initials, color, name, subject, preview, time, badge }: { initials: string; color: string; name: string; subject: string; preview: string; time: string; badge: string }) {
-  return <button className="conversation"><span className={`customer-avatar ${color}`}>{initials}</span><span className="conversation-body"><span className="conversation-line"><strong>{name}</strong><time>{time}</time></span><span className="conversation-subject">{subject}</span><span className="conversation-preview">{preview}</span><span className={`conversation-badge ${badge.toLowerCase().replaceAll(" ", "-")}`}>{badge}</span></span></button>;
+  return <article className="conversation"><span className={`customer-avatar ${color}`}>{initials}</span><span className="conversation-body"><span className="conversation-line"><strong>{name}</strong><time>{time}</time></span><span className="conversation-subject">{subject}</span><span className="conversation-preview">{preview}</span><span className={`conversation-badge ${badge.toLowerCase().replaceAll(" ", "-")}`}>{badge}</span></span></article>;
 }
 function ActivityItem({ icon, color, title, subtitle, time }: { icon: React.ReactNode; color: string; title: string; subtitle: string; time: string }) {
   return <div className="activity-item"><span className={`activity-icon ${color}`}>{icon}</span><div className="activity-copy"><strong>{title}</strong><span>{subtitle}</span></div><time>{time}</time></div>;
